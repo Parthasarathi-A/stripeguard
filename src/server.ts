@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import 'dotenv/config';
 import { readFileSync } from 'fs';
 import { Webhooks } from '@octokit/webhooks';
+import { prisma } from './db.js';
 
 const fastify = Fastify({
   logger: true,
@@ -12,14 +13,11 @@ const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
 const GITHUB_APP_PRIVATE_KEY_PATH = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET;
 
-// Validate all credentials are present — fail fast if misconfigured
 if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY_PATH || !GITHUB_WEBHOOK_SECRET) {
   console.error('❌ Missing GitHub App credentials in .env');
-  console.error('   Required: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_WEBHOOK_SECRET');
   process.exit(1);
 }
 
-// Load the private key from the file path
 let privateKey: string;
 try {
   privateKey = readFileSync(GITHUB_APP_PRIVATE_KEY_PATH, 'utf-8');
@@ -33,18 +31,65 @@ console.log(`   App ID: ${GITHUB_APP_ID}`);
 console.log(`   Private key length: ${privateKey.length} chars`);
 console.log(`   Webhook secret length: ${GITHUB_WEBHOOK_SECRET.length} chars`);
 
-// Initialize the webhooks handler with our secret
 const webhooks = new Webhooks({
   secret: GITHUB_WEBHOOK_SECRET,
 });
 
-// Log every incoming webhook event for now
-webhooks.onAny(({ id, name, payload }) => {
+// Handler: when StripeGuard is installed on an account
+webhooks.on('installation.created', async ({ id, payload }) => {
   console.log('');
-  console.log('📩 Webhook received');
+  console.log('📩 Installation created');
   console.log(`   Event ID: ${id}`);
-  console.log(`   Event name: ${name}`);
-  console.log(`   Action: ${(payload as any).action || 'N/A'}`);
+  console.log(`   Account: ${payload.installation.account?.login}`);
+  console.log(`   Repos: ${payload.repositories?.map(r => r.name).join(', ') || 'none'}`);
+
+  try {
+    const installation = await prisma.installation.create({
+      data: {
+        githubInstallationId: BigInt(payload.installation.id),
+        accountName: payload.installation.account?.login ?? 'unknown',
+        accountType: payload.installation.account?.type ?? 'User',
+        repos: payload.repositories?.map(r => r.name) ?? [],
+        status: 'active',
+      },
+    });
+    console.log(`   ✅ Saved to DB with id=${installation.id}`);
+  } catch (err) {
+    console.error('   ❌ Failed to save installation:', err);
+  }
+});
+
+// Handler: when StripeGuard is uninstalled from an account
+webhooks.on('installation.deleted', async ({ id, payload }) => {
+  console.log('');
+  console.log('📩 Installation deleted');
+  console.log(`   Event ID: ${id}`);
+  console.log(`   Account: ${payload.installation.account?.login}`);
+
+  try {
+    const updated = await prisma.installation.updateMany({
+      where: {
+        githubInstallationId: BigInt(payload.installation.id),
+      },
+      data: {
+        status: 'suspended',
+      },
+    });
+    console.log(`   ✅ Marked ${updated.count} installation(s) as suspended`);
+  } catch (err) {
+    console.error('   ❌ Failed to update installation:', err);
+  }
+});
+
+// Catch-all: still log other events for visibility
+webhooks.onAny(({ id, name, payload }) => {
+  // Skip the two we handle specifically above
+  if (name === 'installation' && ((payload as any).action === 'created' || (payload as any).action === 'deleted')) {
+    return;
+  }
+  console.log('');
+  console.log(`📩 Webhook received: ${name} / ${(payload as any).action || 'N/A'}`);
+  console.log(`   Event ID: ${id}`);
   console.log(`   Sender: ${(payload as any).sender?.login || 'unknown'}`);
 });
 
@@ -53,7 +98,7 @@ fastify.get('/health', async () => {
   return { status: 'ok', timestamp: new Date().toISOString() };
 });
 
-// Webhook endpoint — receives events from GitHub
+// Webhook endpoint
 fastify.post('/webhook', async (request, reply) => {
   const signature = request.headers['x-hub-signature-256'] as string;
   const eventName = request.headers['x-github-event'] as string;
@@ -65,7 +110,6 @@ fastify.post('/webhook', async (request, reply) => {
     return;
   }
 
-  // Verify signature — rejects requests not actually from GitHub
   try {
     await webhooks.verifyAndReceive({
       id: deliveryId,

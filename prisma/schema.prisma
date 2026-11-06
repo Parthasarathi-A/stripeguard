@@ -1,0 +1,28 @@
+// Prisma schema file for StripeGuard
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Installation represents a single install of StripeGuard on a GitHub account.
+// One row per GitHub installation (account-level), tracking which repos it covers.
+model Installation {
+  id                     Int      @id @default(autoincrement())
+  githubInstallationId   BigInt   @unique
+  accountName            String
+  accountType            String   // "User" or "Organization"
+  repos                  String[] // array of repo names, e.g. ["stripeguard", "test-repo"]
+  status                 String   @default("active") // "active" or "suspended"
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([accountName])
+  @@index([status])
+}
