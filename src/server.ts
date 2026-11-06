@@ -3,9 +3,31 @@ import 'dotenv/config';
 import { readFileSync } from 'fs';
 import { Webhooks } from '@octokit/webhooks';
 import { prisma } from './db.js';
+import { registerInstallationHandlers } from './handlers/installation.js';
+import { registerRepositoryHandlers } from './handlers/repositories.js';
 
 const fastify = Fastify({
-  logger: true,
+  logger: { level: 'warn' },
+});
+
+// Clean one-line request summaries (replaces Fastify's noisy per-request JSON)
+fastify.addHook('onResponse', async (request, reply) => {
+  const method = request.method;
+  const url = request.url;
+  const status = reply.statusCode;
+  const responseTime = Math.round(reply.elapsedTime);
+
+  // If it's a webhook, include the GitHub event name for context
+  const eventName = request.headers['x-github-event'];
+  const eventAction = (request.body as any)?.action;
+  const eventContext = eventName
+    ? ` (${eventName}${eventAction ? `:${eventAction}` : ''})`
+    : '';
+
+  // Status emoji for visual scan
+  const emoji = status >= 500 ? '🔥' : status >= 400 ? '⚠️' : '→';
+
+  console.log(`${emoji} ${method} ${url}${eventContext} ${status} ${responseTime}ms`);
 });
 
 // Load GitHub App credentials from .env
@@ -31,187 +53,19 @@ console.log(`   App ID: ${GITHUB_APP_ID}`);
 console.log(`   Private key length: ${privateKey.length} chars`);
 console.log(`   Webhook secret length: ${GITHUB_WEBHOOK_SECRET.length} chars`);
 
+// Initialize the webhooks handler with our secret
 const webhooks = new Webhooks({
   secret: GITHUB_WEBHOOK_SECRET,
 });
 
-// Handler: when StripeGuard is installed on an account
-webhooks.on('installation.created', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Installation created');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-  console.log(`   Repos: ${payload.repositories?.map(r => r.name).join(', ') || 'none'}`);
+// Register all webhook event handlers
+registerInstallationHandlers(webhooks);
+registerRepositoryHandlers(webhooks);
 
-  try {
-    const installation = await prisma.installation.upsert({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      update: {
-        accountName: payload.installation.account?.login ?? 'unknown',
-        accountType: payload.installation.account?.type ?? 'User',
-        repos: payload.repositories?.map(r => r.name) ?? [],
-        status: 'active',
-      },
-      create: {
-        githubInstallationId: BigInt(payload.installation.id),
-        accountName: payload.installation.account?.login ?? 'unknown',
-        accountType: payload.installation.account?.type ?? 'User',
-        repos: payload.repositories?.map(r => r.name) ?? [],
-        status: 'active',
-      },
-    });
-    console.log(`   ✅ Saved to DB with id=${installation.id} (${installation.status})`);
-  } catch (err) {
-    console.error('   ❌ Failed to save installation:', err);
-  }
-});
-
-// Handler: when StripeGuard is uninstalled from an account
-webhooks.on('installation.deleted', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Installation deleted');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-
-  try {
-    const updated = await prisma.installation.updateMany({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      data: {
-        status: 'suspended',
-      },
-    });
-    console.log(`   ✅ Marked ${updated.count} installation(s) as suspended`);
-  } catch (err) {
-    console.error('   ❌ Failed to update installation:', err);
-  }
-});
-
-// Handler: when StripeGuard is suspended on an account (temporary, not uninstalled)
-webhooks.on('installation.suspend', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Installation suspended');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-
-  try {
-    const updated = await prisma.installation.updateMany({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      data: {
-        status: 'suspended',
-      },
-    });
-    console.log(`   ✅ Marked ${updated.count} installation(s) as suspended`);
-  } catch (err) {
-    console.error('   ❌ Failed to suspend installation:', err);
-  }
-});
-
-// Handler: when StripeGuard is unsuspended on an account (reactivated)
-webhooks.on('installation.unsuspend', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Installation unsuspended');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-
-  try {
-    const updated = await prisma.installation.updateMany({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      data: {
-        status: 'active',
-      },
-    });
-    console.log(`   ✅ Marked ${updated.count} installation(s) as active`);
-  } catch (err) {
-    console.error('   ❌ Failed to unsuspend installation:', err);
-  }
-});
-
-// Handler: when repos are added to an existing StripeGuard installation
-webhooks.on('installation_repositories.added', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Repos added to installation');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-  console.log(`   Added repos: ${payload.repositories_added.map(r => r.name).join(', ')}`);
-
-  try {
-    const existing = await prisma.installation.findUnique({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-    });
-
-    if (!existing) {
-      console.warn(`   ⚠️  Installation ${payload.installation.id} not found in DB — skipping`);
-      return;
-    }
-
-    const newRepos = payload.repositories_added.map(r => r.name);
-    const mergedRepos = Array.from(new Set([...existing.repos, ...newRepos]));
-
-    const updated = await prisma.installation.update({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      data: {
-        repos: mergedRepos,
-      },
-    });
-    console.log(`   ✅ Updated repos: ${updated.repos.join(', ')}`);
-  } catch (err) {
-    console.error('   ❌ Failed to add repos:', err);
-  }
-});
-
-// Handler: when repos are removed from an existing StripeGuard installation
-webhooks.on('installation_repositories.removed', async ({ id, payload }) => {
-  console.log('');
-  console.log('📩 Repos removed from installation');
-  console.log(`   Event ID: ${id}`);
-  console.log(`   Account: ${payload.installation.account?.login}`);
-  console.log(`   Removed repos: ${payload.repositories_removed.map(r => r.name).join(', ')}`);
-
-  try {
-    const existing = await prisma.installation.findUnique({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-    });
-
-    if (!existing) {
-      console.warn(`   ⚠️  Installation ${payload.installation.id} not found in DB — skipping`);
-      return;
-    }
-
-    const removedNames = payload.repositories_removed.map(r => r.name);
-    const filteredRepos = existing.repos.filter(name => !removedNames.includes(name));
-
-    const updated = await prisma.installation.update({
-      where: {
-        githubInstallationId: BigInt(payload.installation.id),
-      },
-      data: {
-        repos: filteredRepos,
-      },
-    });
-    console.log(`   ✅ Updated repos: ${updated.repos.join(', ') || '(empty)'}`);
-  } catch (err) {
-    console.error('   ❌ Failed to remove repos:', err);
-  }
-});
-
-// Catch-all: log other events for visibility (wrapped so a weird payload can't crash us)
+// Catch-all: log unhandled events for visibility
 webhooks.onAny(({ id, name, payload }) => {
   try {
-    // Skip the ones we handle specifically above
+    // Skip events that have dedicated handlers
     if (
       name === 'installation' &&
       ['created', 'deleted', 'suspend', 'unsuspend'].includes((payload as any).action)
@@ -238,13 +92,41 @@ fastify.get('/health', async () => {
   return { status: 'ok', timestamp: new Date().toISOString() };
 });
 
+// Admin endpoint: list all installations
+// Supports optional ?status=active or ?status=suspended filter
+fastify.get('/installations', async (request, reply) => {
+  const statusFilter = (request.query as any)?.status;
+
+  const where = statusFilter ? { status: statusFilter } : {};
+
+  try {
+    const installations = await prisma.installation.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Convert BigInt → string for JSON serialization
+    const serialized = installations.map(inst => ({
+      ...inst,
+      githubInstallationId: inst.githubInstallationId.toString(),
+    }));
+
+    return {
+      count: serialized.length,
+      installations: serialized,
+    };
+  } catch (err) {
+    console.error('❌ Failed to list installations:', err);
+    reply.code(500).send({ error: 'Failed to fetch installations' });
+  }
+});
+
 // Webhook endpoint — receives events from GitHub
 fastify.post('/webhook', async (request, reply) => {
   const signature = request.headers['x-hub-signature-256'] as string;
   const eventName = request.headers['x-github-event'] as string;
   const deliveryId = request.headers['x-github-delivery'] as string;
 
-  // Validate required headers upfront
   if (!signature || !eventName || !deliveryId) {
     console.warn('⚠️  Webhook rejected: missing required headers');
     reply.code(400).send({ error: 'Missing required webhook headers' });
