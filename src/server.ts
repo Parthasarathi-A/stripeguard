@@ -5,6 +5,7 @@ import { Webhooks } from '@octokit/webhooks';
 import { prisma } from './db.js';
 import { registerInstallationHandlers } from './handlers/installation.js';
 import { registerRepositoryHandlers } from './handlers/repositories.js';
+import { scanInstallation } from './scanner/scan-installation.js';
 
 const fastify = Fastify({
   logger: { level: 'warn' },
@@ -118,6 +119,51 @@ fastify.get('/installations', async (request, reply) => {
   } catch (err) {
     console.error('❌ Failed to list installations:', err);
     reply.code(500).send({ error: 'Failed to fetch installations' });
+  }
+});
+
+// Trigger a scan for one installation's repos
+fastify.post<{ Params: { installationId: string } }>('/scan/:installationId', async (request, reply) => {
+  const idParam = parseInt(request.params.installationId, 10);
+
+  if (isNaN(idParam) || idParam < 1) {
+    reply.code(400).send({ error: 'Invalid installationId — must be a positive integer' });
+    return;
+  }
+
+  try {
+    const summary = await scanInstallation(idParam);
+    return summary;
+  } catch (err: any) {
+    const msg = err?.message || 'Unknown error';
+    console.error(`❌ Scan failed for installationId=${idParam}:`, msg);
+    reply.code(500).send({ error: msg });
+  }
+});
+
+// List historical scan results for one installation (newest first)
+fastify.get<{ Params: { installationId: string } }>('/scans/:installationId', async (request, reply) => {
+  const idParam = parseInt(request.params.installationId, 10);
+
+  if (isNaN(idParam) || idParam < 1) {
+    reply.code(400).send({ error: 'Invalid installationId' });
+    return;
+  }
+
+  try {
+    const scans = await prisma.scanResult.findMany({
+      where: { installationId: idParam },
+      orderBy: { scannedAt: 'desc' },
+      take: 50, // cap at 50 most recent, don't return 1000s
+    });
+
+    return {
+      count: scans.length,
+      scans,
+    };
+  } catch (err) {
+    console.error('❌ Failed to list scans:', err);
+    reply.code(500).send({ error: 'Failed to fetch scans' });
   }
 });
 

@@ -6,23 +6,43 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
 // Installation represents a single install of StripeGuard on a GitHub account.
 // One row per GitHub installation (account-level), tracking which repos it covers.
 model Installation {
-  id                     Int      @id @default(autoincrement())
-  githubInstallationId   BigInt   @unique
-  accountName            String
-  accountType            String   // "User" or "Organization"
-  repos                  String[] // array of repo names, e.g. ["stripeguard", "test-repo"]
-  status                 String   @default("active") // "active" or "suspended"
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  id                   Int           @id @default(autoincrement())
+  githubInstallationId BigInt        @unique
+  accountName          String
+  accountType          String // "User" or "Organization"
+  repos                String[] // array of repo names
+  status               String        @default("active") // "active" or "suspended"
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  scanResults          ScanResult[] // reverse relation: all scans done for this install
 
   @@index([accountName])
   @@index([status])
+}
+
+// ScanResult represents one scan of one repo at a point in time.
+// Each row holds the summary + all Stripe calls found in that repo.
+model ScanResult {
+  id               Int          @id @default(autoincrement())
+  installationId   Int // FK to Installation.id
+  installation     Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  repoName         String // e.g. "accept-a-payment"
+  filesScanned     Int          @default(0)
+  filesUsingStripe Int          @default(0)
+  calls            Json // array of { file, line, method, snippet }
+  status           String       @default("success") // "success", "failed", "skipped"
+  errorMessage     String? // populated only if status = "failed"
+  scannedAt        DateTime     @default(now())
+
+  @@index([installationId])
+  @@index([repoName])
+  @@index([scannedAt])
 }
