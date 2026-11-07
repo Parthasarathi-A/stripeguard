@@ -8,10 +8,12 @@ import { prisma } from '../db.js';
 export function registerInstallationHandlers(webhooks: Webhooks): void {
   // When StripeGuard is installed on an account (or re-installed with same ID)
   webhooks.on('installation.created', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Installation created');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
     console.log(`   Repos: ${payload.repositories?.map(r => r.name).join(', ') || 'none'}`);
 
     try {
@@ -20,15 +22,15 @@ export function registerInstallationHandlers(webhooks: Webhooks): void {
           githubInstallationId: BigInt(payload.installation.id),
         },
         update: {
-          accountName: payload.installation.account?.login ?? 'unknown',
-          accountType: payload.installation.account?.type ?? 'User',
+          accountName: account?.login ?? 'unknown',
+          accountType: account?.type ?? 'User',
           repos: payload.repositories?.map(r => r.name) ?? [],
           status: 'active',
         },
         create: {
           githubInstallationId: BigInt(payload.installation.id),
-          accountName: payload.installation.account?.login ?? 'unknown',
-          accountType: payload.installation.account?.type ?? 'User',
+          accountName: account?.login ?? 'unknown',
+          accountType: account?.type ?? 'User',
           repos: payload.repositories?.map(r => r.name) ?? [],
           status: 'active',
         },
@@ -41,10 +43,12 @@ export function registerInstallationHandlers(webhooks: Webhooks): void {
 
   // When StripeGuard is uninstalled from an account
   webhooks.on('installation.deleted', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Installation deleted');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
 
     try {
       const updated = await prisma.installation.updateMany({
@@ -63,10 +67,12 @@ export function registerInstallationHandlers(webhooks: Webhooks): void {
 
   // When StripeGuard is suspended on an account (temporary, not uninstalled)
   webhooks.on('installation.suspend', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Installation suspended');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
 
     try {
       const updated = await prisma.installation.updateMany({
@@ -85,10 +91,12 @@ export function registerInstallationHandlers(webhooks: Webhooks): void {
 
   // When StripeGuard is unsuspended on an account (reactivated)
   webhooks.on('installation.unsuspend', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Installation unsuspended');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
 
     try {
       const updated = await prisma.installation.updateMany({

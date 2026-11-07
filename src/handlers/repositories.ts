@@ -11,10 +11,12 @@ import { prisma } from '../db.js';
 export function registerRepositoryHandlers(webhooks: Webhooks): void {
   // When repos are added to an existing StripeGuard installation
   webhooks.on('installation_repositories.added', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Repos added to installation');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
     console.log(`   Added repos: ${payload.repositories_added.map(r => r.name).join(', ')}`);
 
     try {
@@ -48,10 +50,12 @@ export function registerRepositoryHandlers(webhooks: Webhooks): void {
 
   // When repos are removed from an existing StripeGuard installation
   webhooks.on('installation_repositories.removed', async ({ id, payload }) => {
+    const account = payload.installation.account as any;
+
     console.log('');
     console.log('📩 Repos removed from installation');
     console.log(`   Event ID: ${id}`);
-    console.log(`   Account: ${payload.installation.account?.login}`);
+    console.log(`   Account: ${account?.login}`);
     console.log(`   Removed repos: ${payload.repositories_removed.map(r => r.name).join(', ')}`);
 
     try {
